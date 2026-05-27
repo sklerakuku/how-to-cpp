@@ -608,19 +608,22 @@ void Auth::on_enterButton_clicked() {
                 Реализованы: добавление/редактирование пользователя, удаление, снятие блокировки, отображение статуса.
             </div>
             <div class="code-block">
-                <div class="code-header"><span>🖥️ mainwindow.h (фрагмент)</span><button class="copy-btn" data-code="mainwindow_h">📋 Копировать</button></div>
+                <div class="code-header"><span>🖥️ mainwindow.h </span><button class="copy-btn" data-code="mainwindow_h">📋 Копировать</button></div>
                 <pre id="code-mainwindow_h">#ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-#include &lt;QMainWindow&gt;
-#include &lt;QtSql&gt;
-#include &lt;QtWidgets&gt;
+#include <QMainWindow>
+#include <QtSql>
+#include <QtWidgets>
 
-namespace Ui { class MainWindow; }
+namespace Ui {
+class MainWindow;
+}
 
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
+
 public:
     explicit MainWindow(int userId, const QString& login, QWidget *parent = nullptr);
     ~MainWindow();
@@ -637,9 +640,12 @@ private slots:
 
 private:
     Ui::MainWindow *ui;
+
     int currentUserId;
-    QString currentUserLogin, currentUserRole;
+    QString currentUserLogin;
+    QString currentUserRole;
     bool isAdmin;
+
     void loadUserRole();
     void loadUsersTable();
     void clearUserInputs();
@@ -651,7 +657,435 @@ private:
     void unblockUser(int userId);
     void showMessage(const QString& title, const QString& message, bool isError = false);
 };
-#endif</pre>
+
+#endif // MAINWINDOW_H
+</pre>
+
+<pre id="code-mainwindow_h">
+    #include "mainwindow.h"
+#include "ui_mainwindow.h"
+#include <QSqlQuery>
+#include <QSqlError>
+#include <QCryptographicHash>
+#include <QMessageBox>
+#include <QDebug>
+
+MainWindow::MainWindow(int userId, const QString& login, QWidget *parent) :
+    QMainWindow(parent),
+    ui(new Ui::MainWindow),
+    currentUserId(userId),
+    currentUserLogin(login),
+    isAdmin(false)
+{
+    ui->setupUi(this);
+    setWindowTitle(QString("Главное окно - %1").arg(login));
+
+    // Проверяем подключение к БД
+    if (!QSqlDatabase::database().isOpen()) {
+        qDebug() << "База данных не открыта!";
+        showMessage("Ошибка", "Нет подключения к базе данных!", true);
+        return;
+    }
+
+    ui->welcomeLabel->setText(QString("Добро пожаловать, %1!").arg(login));
+
+    ui->roleCombo->clear();
+    ui->roleCombo->addItem("Пользователь");
+    ui->roleCombo->addItem("Администратор");
+
+    loadUserRole();
+}
+
+MainWindow::~MainWindow()
+{
+    delete ui;
+}
+
+void MainWindow::loadUserRole()
+{
+    qDebug() << "Загрузка роли для пользователя ID:" << currentUserId;
+
+    // Проверяем подключение
+    if (!QSqlDatabase::database().isOpen()) {
+        qDebug() << "Ошибка: База данных не открыта при загрузке роли!";
+        showMessage("Ошибка", "Нет подключения к базе данных!", true);
+        return;
+    }
+
+    // Получаем роль текущего пользователя
+    QSqlQuery roleQuery;
+    roleQuery.prepare("SELECT role FROM users WHERE id = :userId");
+    roleQuery.bindValue(":userId", currentUserId);
+
+    if (roleQuery.exec() && roleQuery.next()) {
+        currentUserRole = roleQuery.value(0).toString();
+        isAdmin = (currentUserRole == "Администратор");
+
+        qDebug() << "Роль пользователя:" << currentUserRole << "isAdmin:" << isAdmin;
+
+        // Если не администратор, отключаем вкладку администрирования
+        if (!isAdmin) {
+            ui->tabWidget->setTabEnabled(1, false);
+            ui->tabWidget->setTabText(1, "Администрирование (доступ запрещен)");
+        } else {
+            // Загружаем таблицу пользователей
+            loadUsersTable();
+        }
+    } else {
+        qDebug() << "Ошибка получения роли:" << roleQuery.lastError().text();
+        currentUserRole = "";
+        isAdmin = false;
+    }
+}
+
+void MainWindow::loadUsersTable()
+{
+    qDebug() << "Загрузка таблицы пользователей...";
+
+    // Проверяем подключение
+    if (!QSqlDatabase::database().isOpen()) {
+        qDebug() << "Ошибка: База данных не открыта!";
+        showMessage("Ошибка", "Нет подключения к базе данных!", true);
+        return;
+    }
+
+    QSqlQuery query("SELECT id, login, role, is_blocked, try_count FROM users ORDER BY id");
+
+    if (query.lastError().isValid()) {
+        qDebug() << "Ошибка запроса:" << query.lastError().text();
+        showMessage("Ошибка", "Ошибка загрузки данных: " + query.lastError().text(), true);
+        return;
+    }
+
+    ui->usersTable->clear();
+    ui->usersTable->setRowCount(0);
+    ui->usersTable->setColumnCount(5);
+    ui->usersTable->setHorizontalHeaderLabels({"ID", "Логин", "Роль", "Статус", "Попытки"});
+
+    int row = 0;
+    while (query.next()) {
+        ui->usersTable->insertRow(row);
+
+        int id = query.value(0).toInt();
+        QString login = query.value(1).toString();
+        QString role = query.value(2).toString();
+        bool isBlocked = query.value(3).toBool();
+        int tryCount = query.value(4).toInt();
+
+        qDebug() << "Найден пользователь:" << id << login << role << "Заблокирован:" << isBlocked;
+
+        ui->usersTable->setItem(row, 0, new QTableWidgetItem(QString::number(id)));
+        ui->usersTable->setItem(row, 1, new QTableWidgetItem(login));
+        ui->usersTable->setItem(row, 2, new QTableWidgetItem(role.isEmpty() ? "Пользователь" : role));
+        ui->usersTable->setItem(row, 3, new QTableWidgetItem(isBlocked ? "Заблокирован" : "Активен"));
+        ui->usersTable->setItem(row, 4, new QTableWidgetItem(QString::number(tryCount)));
+
+        // Подсветка заблокированных пользователей
+        if (isBlocked) {
+            for (int col = 0; col < 5; ++col) {
+                ui->usersTable->item(row, col)->setBackground(QColor(255, 200, 200));
+            }
+        }
+
+        row++;
+    }
+
+    qDebug() << "Загружено" << row << "пользователей";
+
+    ui->usersTable->resizeColumnsToContents();
+    ui->usersTable->horizontalHeader()->setStretchLastSection(true);
+}
+
+void MainWindow::clearUserInputs()
+{
+    ui->loginEdit->clear();
+    ui->passwordEdit->clear();
+    ui->roleCombo->setCurrentIndex(0);
+    ui->editUserButton->setEnabled(false);
+    ui->addUserButton->setEnabled(true);
+    ui->usersTable->clearSelection();
+}
+
+bool MainWindow::validateUserInput(const QString& login, const QString& password)
+{
+    if (login.isEmpty()) {
+        showMessage("Ошибка", "Логин не может быть пустым!", true);
+        return false;
+    }
+
+    if (login.length() < 3) {
+        showMessage("Ошибка", "Логин должен содержать минимум 3 символа!", true);
+        return false;
+    }
+
+    if (password.isEmpty()) {
+        showMessage("Ошибка", "Пароль не может быть пустым!", true);
+        return false;
+    }
+
+    if (password.length() < 4) {
+        showMessage("Ошибка", "Пароль должен содержать минимум 4 символа!", true);
+        return false;
+    }
+
+    return true;
+}
+
+bool MainWindow::isLoginExists(const QString& login, int excludeUserId)
+{
+    QSqlQuery query;
+    if (excludeUserId == -1) {
+        query.prepare("SELECT id FROM users WHERE login = :login");
+    } else {
+        query.prepare("SELECT id FROM users WHERE login = :login AND id != :excludeId");
+        query.bindValue(":excludeId", excludeUserId);
+    }
+    query.bindValue(":login", login);
+
+    if (query.exec() && query.next()) {
+        return true;
+    }
+    return false;
+}
+
+void MainWindow::addUser(const QString& login, const QString& password, const QString& role)
+{
+    QByteArray ba = password.toUtf8();
+    QString pass_hash = QCryptographicHash::hash(ba, QCryptographicHash::Md5).toHex();
+
+    QSqlQuery query;
+    query.prepare("INSERT INTO users (login, password, role, is_blocked, try_count) "
+                  "VALUES (:login, :password, :role, 0, 0)");
+    query.bindValue(":login", login);
+    query.bindValue(":password", pass_hash);
+    query.bindValue(":role", role);
+
+    if (query.exec()) {
+        showMessage("Успех", QString("Пользователь '%1' успешно добавлен!").arg(login));
+        loadUsersTable();
+        clearUserInputs();
+    } else {
+        showMessage("Ошибка", "Ошибка при добавлении пользователя: " + query.lastError().text(), true);
+    }
+}
+
+void MainWindow::updateUser(int userId, const QString& login, const QString& password, const QString& role)
+{
+    QSqlQuery query;
+
+    if (password.isEmpty()) {
+        // Если пароль не меняем, оставляем старый
+        query.prepare("UPDATE users SET login = :login, role = :role WHERE id = :userId");
+    } else {
+        QString pass_hash = QCryptographicHash::hash(password.toUtf8(), QCryptographicHash::Md5).toHex();
+        query.prepare("UPDATE users SET login = :login, password = :password, role = :role WHERE id = :userId");
+        query.bindValue(":password", pass_hash);
+    }
+
+    query.bindValue(":login", login);
+    query.bindValue(":role", role);
+    query.bindValue(":userId", userId);
+
+    if (query.exec()) {
+        showMessage("Успех", QString("Данные пользователя '%1' обновлены!").arg(login));
+        loadUsersTable();
+        clearUserInputs();
+    } else {
+        showMessage("Ошибка", "Ошибка при обновлении пользователя: " + query.lastError().text(), true);
+    }
+}
+
+void MainWindow::deleteUser(int userId)
+{
+    if (userId == currentUserId) {
+        showMessage("Ошибка", "Вы не можете удалить самого себя!", true);
+        return;
+    }
+
+    QSqlQuery query;
+    query.prepare("DELETE FROM users WHERE id = :userId");
+    query.bindValue(":userId", userId);
+
+    if (query.exec()) {
+        showMessage("Успех", "Пользователь успешно удален!");
+        loadUsersTable();
+        clearUserInputs();
+    } else {
+        showMessage("Ошибка", "Ошибка при удалении пользователя: " + query.lastError().text(), true);
+    }
+}
+
+void MainWindow::unblockUser(int userId)
+{
+    QSqlQuery query;
+    query.prepare("UPDATE users SET is_blocked = 0, try_count = 0 WHERE id = :userId");
+    query.bindValue(":userId", userId);
+
+    if (query.exec()) {
+        showMessage("Успех", "Блокировка успешно снята!");
+        loadUsersTable();
+    } else {
+        showMessage("Ошибка", "Ошибка при снятии блокировки: " + query.lastError().text(), true);
+    }
+}
+
+void MainWindow::showMessage(const QString& title, const QString& message, bool isError)
+{
+    if (isError) {
+        QMessageBox::critical(this, title, message);
+    } else {
+        QMessageBox::information(this, title, message);
+    }
+}
+
+// Slots
+void MainWindow::on_tabWidget_currentChanged(int index)
+{
+    if (index == 1 && isAdmin) {
+        loadUsersTable();
+    }
+}
+
+void MainWindow::on_addUserButton_clicked()
+{
+    QString login = ui->loginEdit->text().trimmed();
+    QString password = ui->passwordEdit->text();
+    QString role = ui->roleCombo->currentText();
+
+    if (!validateUserInput(login, password)) {
+        return;
+    }
+
+    if (isLoginExists(login)) {
+        showMessage("Ошибка", QString("Пользователь с логином '%1' уже существует!").arg(login), true);
+        return;
+    }
+
+    addUser(login, password, role);
+}
+
+void MainWindow::on_editUserButton_clicked()
+{
+    QModelIndexList selected = ui->usersTable->selectionModel()->selectedRows();
+    if (selected.isEmpty()) {
+        return;
+    }
+
+    int userId = ui->usersTable->item(selected.first().row(), 0)->text().toInt();
+    QString login = ui->loginEdit->text().trimmed();
+    QString password = ui->passwordEdit->text();
+    QString role = ui->roleCombo->currentText();
+
+    if (login.isEmpty()) {
+        showMessage("Ошибка", "Логин не может быть пустым!", true);
+        return;
+    }
+
+    if (login.length() < 3) {
+        showMessage("Ошибка", "Логин должен содержать минимум 3 символа!", true);
+        return;
+    }
+
+    if (isLoginExists(login, userId)) {
+        showMessage("Ошибка", QString("Пользователь с логином '%1' уже существует!").arg(login), true);
+        return;
+    }
+
+    updateUser(userId, login, password, role);
+}
+
+void MainWindow::on_unblockUserButton_clicked()
+{
+    QModelIndexList selected = ui->usersTable->selectionModel()->selectedRows();
+    if (selected.isEmpty()) {
+        return;
+    }
+
+    int userId = ui->usersTable->item(selected.first().row(), 0)->text().toInt();
+    QString status = ui->usersTable->item(selected.first().row(), 3)->text();
+
+    if (status != "Заблокирован") {
+        showMessage("Информация", "Этот пользователь не заблокирован!");
+        return;
+    }
+
+    QMessageBox::StandardButton reply = QMessageBox::question(this, "Подтверждение",
+        "Снять блокировку с пользователя?",
+        QMessageBox::Yes | QMessageBox::No);
+
+    if (reply == QMessageBox::Yes) {
+        unblockUser(userId);
+    }
+}
+
+void MainWindow::on_deleteUserButton_clicked()
+{
+    QModelIndexList selected = ui->usersTable->selectionModel()->selectedRows();
+    if (selected.isEmpty()) {
+        return;
+    }
+
+    int userId = ui->usersTable->item(selected.first().row(), 0)->text().toInt();
+    QString login = ui->usersTable->item(selected.first().row(), 1)->text();
+
+    if (userId == currentUserId) {
+        showMessage("Ошибка", "Вы не можете удалить самого себя!", true);
+        return;
+    }
+
+    QMessageBox::StandardButton reply = QMessageBox::question(this, "Подтверждение",
+        QString("Вы уверены, что хотите удалить пользователя '%1'?\nЭто действие нельзя отменить!").arg(login),
+        QMessageBox::Yes | QMessageBox::No);
+
+    if (reply == QMessageBox::Yes) {
+        deleteUser(userId);
+    }
+}
+
+void MainWindow::on_refreshUsersButton_clicked()
+{
+    loadUsersTable();
+}
+
+void MainWindow::on_usersTable_itemSelectionChanged()
+{
+    QModelIndexList selected = ui->usersTable->selectionModel()->selectedRows();
+    if (selected.isEmpty()) {
+        ui->editUserButton->setEnabled(false);
+        ui->unblockUserButton->setEnabled(false);
+        ui->deleteUserButton->setEnabled(false);
+        return;
+    }
+
+    ui->editUserButton->setEnabled(true);
+    ui->deleteUserButton->setEnabled(true);
+
+    int row = selected.first().row();
+    QString login = ui->usersTable->item(row, 1)->text();
+    QString role = ui->usersTable->item(row, 2)->text();
+    QString status = ui->usersTable->item(row, 3)->text();
+
+    // Заполняем форму для редактирования
+    ui->loginEdit->setText(login);
+    ui->passwordEdit->clear();
+
+    // Устанавливаем роль в комбобоксе
+    int index = ui->roleCombo->findText(role);
+    if (index >= 0) {
+        ui->roleCombo->setCurrentIndex(index);
+    }
+
+    ui->addUserButton->setEnabled(false);
+    ui->unblockUserButton->setEnabled(status == "Заблокирован");
+}
+
+void MainWindow::on_clearButton_clicked()
+{
+    clearUserInputs();
+}
+
+
+</pre>
             </div>
             <div class="note">
                 <i class="fas fa-lightbulb"></i> Полный код mainwindow.cpp очень объемный, но логика прозрачна: <strong>loadUsersTable</strong> читает всех пользователей, отображает блокировку красным, 
